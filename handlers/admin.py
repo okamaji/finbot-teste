@@ -7,6 +7,7 @@ Novidades vs versão anterior:
 - /veruser <chat_id> — ver detalhes de um usuário
 - /stats — painel de estatísticas
 - /users — lista de usuários
+- /admin — lista todos os comandos administrativos
 - Usa db_gerar_key / db_revogar_por_* do novo database.py
 """
 import secrets
@@ -28,6 +29,38 @@ SEP = "─" * 19
 
 def _is_admin(update: Update) -> bool:
     return update.effective_chat.id == ADMIN_ID
+
+
+# ── /admin ────────────────────────────────────────────────────────────────────
+async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lista todos os comandos administrativos disponíveis."""
+    if not _is_admin(update):
+        await update.message.reply_text("❌ Sem permissão.")
+        return
+
+    await update.message.reply_text(
+        f"👑 *Painel Admin — FinBot v2*\n{SEP}\n\n"
+        "🔑 *Licenças*\n"
+        "/gerarkey `<dias>` — Gera nova chave de acesso\n"
+        "/revogar `<chat_id>` — Revoga licença por chat\\_id\n"
+        "/revogar `@username` — Revoga licença por username\n"
+        "/revogar `key <KEY>` — Revoga uma chave específica\n"
+        "/revogar `all` — Revoga todas as licenças ativas\n\n"
+        f"{SEP}\n"
+        "👤 *Usuários*\n"
+        "/veruser `<chat_id>` — Ver detalhes de um usuário\n"
+        "/users — Listar todos os usuários cadastrados\n\n"
+        f"{SEP}\n"
+        "📊 *Estatísticas*\n"
+        "/stats — Painel geral de estatísticas do bot\n\n"
+        f"{SEP}\n"
+        "📣 *Mensagens*\n"
+        "/mensagem `<texto>` — Broadcast para todos os usuários\n"
+        "/mensagemuser `<chat_id>` `<texto>` — Mensagem para usuário específico\n\n"
+        f"{SEP}\n"
+        "_Todos os comandos acima são exclusivos para administradores._",
+        parse_mode=ParseMode.MARKDOWN
+    )
 
 
 # ── /gerarkey ─────────────────────────────────────────────────────────────────
