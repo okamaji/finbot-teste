@@ -1,10 +1,16 @@
+"""
+config.py — Configurações do FinBot.
+"""
 import os
+import re as _re
 from zoneinfo import ZoneInfo
 
 # ── Variáveis obrigatórias ────────────────────────────────────────────────────
 TOKEN    = os.environ.get("TOKEN", "")
 DATABASE = os.environ.get("DATABASE_URL", "")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
+
+_admin_raw = os.environ.get("ADMIN_ID", "0")
+ADMIN_ID   = int(_re.sub(r"[^0-9]", "", _admin_raw) or "0")
 
 if not TOKEN:
     raise ValueError("❌ Variável de ambiente TOKEN não configurada!")
@@ -15,11 +21,10 @@ if not DATABASE:
 FUSO = ZoneInfo("America/Sao_Paulo")
 
 # ── Cache de licenças ─────────────────────────────────────────────────────────
-CACHE_TTL     = int(os.environ.get("CACHE_TTL",     "300"))   # segundos (5 min)
-CACHE_MAXSIZE = int(os.environ.get("CACHE_MAXSIZE", "2000"))  # 2x maior para 1k users
+CACHE_TTL     = int(os.environ.get("CACHE_TTL",     "300"))
+CACHE_MAXSIZE = int(os.environ.get("CACHE_MAXSIZE", "2000"))
 
-# ── Pool de conexões ─────────────────────────────────────────────────────────
-# Para 1k users: mínimo 5, máximo 20 (Railway suporta bem)
+# ── Pool de conexões ──────────────────────────────────────────────────────────
 DB_POOL_MIN = int(os.environ.get("DB_POOL_MIN", "5"))
 DB_POOL_MAX = int(os.environ.get("DB_POOL_MAX", "20"))
 
@@ -27,6 +32,14 @@ DB_POOL_MAX = int(os.environ.get("DB_POOL_MAX", "20"))
 VALOR_MAX           = 999_999.00
 ESTADOS_TTL_MINUTOS = int(os.environ.get("ESTADOS_TTL_MINUTOS", "30"))
 DEMO_NUM_REGISTROS  = 18
+
+# ── Rate limiting ─────────────────────────────────────────────────────────────
+RATE_MSG_INTERVALO  = 5    # segundos mínimos entre mensagens
+RATE_SPAM_AGRESSIVO = 10   # interações em <1s para spam agressivo
+
+# ── Retenção de dados ─────────────────────────────────────────────────────────
+DIAS_GRACA_RENOVACAO = 30
+DIAS_DELETE_DADOS    = 40
 
 # ── Textuais ──────────────────────────────────────────────────────────────────
 MESES = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho",
@@ -43,11 +56,10 @@ EMOJI_METODO = {
     "Cartão de Débito":  "🏧",
 }
 
-# Mapeamento curto para callback_data (evita estouro de 64 bytes)
 METODO_SHORT = {
     "Pix":               "pix",
     "Transferência":     "transf",
     "Cartão de Crédito": "credito",
     "Cartão de Débito":  "debito",
 }
-SHORT_METODO = {v: k for k, v in METODO_SHORT.items()}  # inverso
+SHORT_METODO = {v: k for k, v in METODO_SHORT.items()}

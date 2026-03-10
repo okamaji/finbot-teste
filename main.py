@@ -1,5 +1,17 @@
 """
 main.py — Entry point do FinBot v2.
+
+Novidades:
+- Rate limiting avançado: 1 msg/5s (silencioso) + spam agressivo → revoga licença
+- Termos obrigatórios no /start e pós-ativação de key
+- /key — registrar/trocar licença sem precisar de /start
+- /termos — ver termos de uso
+- Mensagem "invalidada" (key bloqueada por 3 tentativas)
+- Novos comandos admin: /gerarkey, /stats, /users, /veruser, /mensagemuser
+- /revogar all — revogar todas as licenças de uma vez
+- Job diário de retenção de dados (40 dias após expiração)
+- asyncio.run() compatível com Python 3.12+
+- cancelar_fluxo — callback universal de cancelamento
 """
 import asyncio
 import logging
@@ -11,64 +23,54 @@ from telegram.ext import (Application, CommandHandler, MessageHandler,
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
 
-from config import TOKEN, FUSO, EMOJI, LABEL
+from config import TOKEN, DATABASE, FUSO, EMOJI, LABEL
 from database import (init_pool, init_db, db_ativar_licenca, db_inserir_registro,
-                      db_saldo_agregado, db_atualizar_registro, get_conn, release_conn)
+                      db_saldo_agregado, db_atualizar_registro,
+                      db_aceitar_termos, db_verificar_termos,
+                      db_limpar_dados_expirados, get_conn, release_conn)
 from helpers import fmt, parsear_valor, fmt_registro, agora_br
 from middleware import (verificar_acesso, get_chat_id_efetivo, cache_invalidar,
-                        verificar_licenca_cache, estado_novo, limpar_estados_expirados)
-from keyboards import teclado_tipo
+                        verificar_licenca_cache, estado_novo,
+                        limpar_estados_expirados, checar_spam)
+from keyboards import teclado_tipo, teclado_nlp, teclado_termos
 from nlp import interpretar_frase, resumo_nlp
 from server import keep_alive
 from demo import popular_conta_demo
 
 from handlers.core import (cmd_start, cmd_ajuda, cmd_cancelar, cmd_home,
                              cmd_saldo, cmd_hoje, cmd_mes, cmd_extrato,
-                             cmd_entradas, cmd_despesas, cmd_pixs, menu_principal)
+                             cmd_entradas, cmd_despesas, cmd_pixs,
+                             cmd_key, cmd_termos, menu_principal, TERMOS_TEXTO)
 from handlers.registros import (cmd_desfazer, cmd_editar, cmd_retirar,
                                   handle_registros_callback)
 from handlers.contas import (cmd_apagar, cmd_pendentes, cmd_pago,
                                handle_contas_callback, handle_contas_texto)
-from handlers.admin import cmd_gerar_key, cmd_revogar
-from handlers.broadcast import cmd_mensagem
+from handlers.admin import (cmd_gerar_key, cmd_gerarkey, cmd_revogar,
+                              cmd_veruser, cmd_stats, cmd_users)
+from handlers.broadcast import cmd_mensagem, cmd_mensagemuser
 from handlers.investimentos import (cmd_investimentos, cmd_inv_add, cmd_inv_del,
                                      handle_inv_callback, handle_inv_texto)
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# A1 — Lock por chat_id para proteger acesso ao bot_data
 _user_locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
-
-# C5 — Rate limiting: máx 10 mensagens por usuário em 10 segundos
-_rate_counters: dict[int, list] = defaultdict(list)
-_RATE_LIMIT    = 10   # mensagens
-_RATE_WINDOW   = 10   # segundos
-
-# B5 — Lock para geração de conta demo (evita double-click)
 _demo_locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
-def _check_rate_limit(chat_id: int) -> bool:
-    """Retorna True se usuário está dentro do limite. False se excedeu."""
-    import time
-    agora  = time.time()
-    janela = _rate_counters[chat_id]
-    # Remove registros fora da janela
-    _rate_counters[chat_id] = [t for t in janela if agora - t < _RATE_WINDOW]
-    if len(_rate_counters[chat_id]) >= _RATE_LIMIT:
-        return False
-    _rate_counters[chat_id].append(agora)
-    return True
-
-
-# ── Job periódico ─────────────────────────────────────────────────────────────
+# ── Jobs periódicos ────────────────────────────────────────────────────────────
 async def _job_limpar_estados(context: ContextTypes.DEFAULT_TYPE):
-    """Roda a cada 5 minutos via JobQueue — não a cada mensagem."""
     estados = context.bot_data.get("estados", {})
     n = limpar_estados_expirados(estados)
     if n:
         logger.info("Job: %d estados expirados removidos", n)
+
+
+async def _job_limpar_dados_expirados(context: ContextTypes.DEFAULT_TYPE):
+    """Roda diariamente — deleta dados de usuários que não renovaram em 40 dias."""
+    n = db_limpar_dados_expirados(40)
+    if n:
+        logger.info("Job retenção: %d usuários deletados", n)
 
 
 # ── /conta ────────────────────────────────────────────────────────────────────
@@ -92,7 +94,6 @@ async def cmd_conta(update: Update, context: ContextTypes.DEFAULT_TYPE):
     num = int(args[0])
     conta_ativa[chat_id] = num
     if num == 2:
-        # B5 — lock por chat_id evita double-click gerando dados duplicados
         async with _demo_locks[chat_id]:
             await update.message.reply_text("🧪 Gerando dados de demonstração...")
             try:
@@ -111,24 +112,15 @@ async def cmd_conta(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_texto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
 
-    # C5 — Rate limiting: bloqueia spam antes de qualquer processamento
-    if not _check_rate_limit(chat_id):
-        try:
-            await update.message.reply_text(
-                "⚠️ Muitas mensagens em pouco tempo. Aguarde alguns segundos."
-            )
-        except TelegramError:
-            pass
+    # Rate limiting
+    if await checar_spam(update):
         return
 
-    # A1 — Lock por chat_id: garante que mensagens do mesmo usuário
-    #       não corrompam o estado uma da outra se chegarem em paralelo
     async with _user_locks[chat_id]:
         await _handle_texto_locked(update, context, chat_id)
 
 
 async def _handle_texto_locked(update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int):
-    """Lógica principal do handle_texto — executa dentro do lock do chat_id."""
     texto       = update.message.text.strip()
     estados     = context.bot_data.setdefault("estados", {})
     conta_ativa = context.bot_data.setdefault("conta_ativa", {})
@@ -139,6 +131,12 @@ async def _handle_texto_locked(update: Update, context: ContextTypes.DEFAULT_TYP
     # ── Ativação de licença ───────────────────────────────────────────────────
     if etapa == "aguardando_key":
         resultado = db_ativar_licenca(texto, chat_id)
+        msgs = {
+            "expirada":   "⚠️ Essa chave já expirou. Renove com @okamaji.",
+            "ja_usada":   "❌ Essa chave já está sendo usada em outra conta.",
+            "invalidada": "🚫 Essa chave foi invalidada por tentativas inválidas. Contate @okamaji.",
+            "invalida":   "❌ Chave inválida. Tente novamente ou contate @okamaji.",
+        }
         if resultado == "ok":
             estados.pop(chat_id, None)
             cache_invalidar(chat_id)
@@ -150,29 +148,38 @@ async def _handle_texto_locked(update: Update, context: ContextTypes.DEFAULT_TYP
                 conn.commit()
             finally:
                 release_conn(conn)
-            try:
+            if not db_verificar_termos(chat_id):
+                await update.message.reply_text(
+                    "✅ *Acesso liberado!*\n\nAntes de continuar, leia e aceite os termos:",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                await update.message.reply_text(
+                    f"{TERMOS_TEXTO}\n\nVocê precisa aceitar os termos para continuar.",
+                    reply_markup=teclado_termos()
+                )
+            else:
                 await update.message.reply_text(
                     "✅ *Acesso liberado!*\n\n" + menu_principal(),
                     parse_mode=ParseMode.MARKDOWN
                 )
-            except TelegramError as e:
-                logger.warning("TelegramError ao enviar menu. chat_id=%d: %s", chat_id, e)
-        elif resultado == "expirada":
-            await update.message.reply_text("⚠️ Essa chave já expirou. Renove com @okamaji.")
-        elif resultado == "ja_usada":
-            await update.message.reply_text("❌ Essa chave já está sendo usada em outra conta.")
         else:
-            await update.message.reply_text("❌ Chave inválida. Tente novamente ou contate @okamaji.")
+            await update.message.reply_text(msgs.get(resultado, "❌ Erro desconhecido."))
         return
 
-    # ── Verificação de licença via cache ──────────────────────────────────────
+    # ── Verificação de licença ────────────────────────────────────────────────
     status = verificar_licenca_cache(chat_id)
     if status == "expirada":
-        await update.message.reply_text("⚠️ Seu plano expirou! Renove com @okamaji.")
+        await update.message.reply_text(
+            "⚠️ *Sua licença expirou!*\n\nUse /key para registrar uma nova chave.",
+            parse_mode=ParseMode.MARKDOWN
+        )
         return
     if status == "invalida":
         estados[chat_id] = estado_novo({"etapa": "aguardando_key"})
-        await update.message.reply_text("🔒 Insira sua chave de acesso:")
+        await update.message.reply_text(
+            "🔒 *Sua licença não está ativa.*\n\nUse /key para registrar uma nova licença.",
+            parse_mode=ParseMode.MARKDOWN
+        )
         return
 
     # ── Fluxo de investimentos ────────────────────────────────────────────────
@@ -204,7 +211,7 @@ async def _handle_texto_locked(update: Update, context: ContextTypes.DEFAULT_TYP
         s = db_saldo_agregado(chat_id_ef)
         try:
             await update.message.reply_text(
-                f"✅ *Registrado!*\n\n{fmt_registro(r)}\n\n{'─'*28}\n"
+                f"✅ *Registrado!*\n\n{fmt_registro(r)}\n\n{'─'*19}\n"
                 f"💰 *Saldo atual: {fmt(s['saldo'])}*\n"
                 f"🟢 Entradas: {fmt(s['entradas'])}  🔴 Saídas: {fmt(s['despesas']+s['pixs'])}",
                 parse_mode=ParseMode.MARKDOWN
@@ -242,14 +249,9 @@ async def _handle_texto_locked(update: Update, context: ContextTypes.DEFAULT_TYP
     resultado_nlp = interpretar_frase(texto)
     if resultado_nlp:
         estados[chat_id] = estado_novo({"etapa": "nlp_confirmar", "nlp": resultado_nlp})
-        teclado = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Confirmar", callback_data="nlp_confirmar"),
-            InlineKeyboardButton("✏️ Corrigir",  callback_data="nlp_corrigir"),
-            InlineKeyboardButton("❌ Cancelar",  callback_data="nlp_cancelar"),
-        ]])
         await update.message.reply_text(
             resumo_nlp(resultado_nlp, fmt),
-            reply_markup=teclado,
+            reply_markup=teclado_nlp(),
             parse_mode=ParseMode.MARKDOWN
         )
         return
@@ -282,6 +284,29 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conta_ativa = context.bot_data.setdefault("conta_ativa", {})
     chat_id_ef  = get_chat_id_efetivo(chat_id, conta_ativa)
 
+    # ── Cancelar fluxo universal ──────────────────────────────────────────────
+    if data == "cancelar_fluxo":
+        estados.pop(chat_id, None)
+        await query.edit_message_text("❌ Ação cancelada.")
+        return
+
+    # ── Termos ────────────────────────────────────────────────────────────────
+    if data == "termos_aceitar":
+        db_aceitar_termos(chat_id)
+        await query.edit_message_text(
+            "✅ *Termos aceitos!*\n\n" + menu_principal(),
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    if data == "termos_recusar":
+        await query.edit_message_text(
+            "❌ *Termos não aceitos.*\n\n"
+            "Você não poderá usar o bot sem aceitar os termos.\n"
+            "Use /termos para rever e /start para tentar novamente."
+        )
+        return
+
     # ── NLP ───────────────────────────────────────────────────────────────────
     if data == "nlp_confirmar":
         estado = estados.get(chat_id, {})
@@ -295,7 +320,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                  metodo=nlp.get("metodo_pagamento"), origem="nlp")
         s = db_saldo_agregado(chat_id_ef)
         await query.edit_message_text(
-            f"✅ *Registrado!*\n\n{fmt_registro(r)}\n\n{'─'*28}\n"
+            f"✅ *Registrado!*\n\n{fmt_registro(r)}\n\n{'─'*19}\n"
             f"💰 *Saldo atual: {fmt(s['saldo'])}*",
             parse_mode=ParseMode.MARKDOWN
         )
@@ -318,19 +343,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if data == "nlp_cancelar":
-        estados.pop(chat_id, None)
-        await query.edit_message_text("❌ Registro cancelado.")
-        return
-
     # ── Seleção de tipo ───────────────────────────────────────────────────────
     if data.startswith("tipo:"):
         dado   = data.replace("tipo:", "")
         estado = estados.get(chat_id)
-        if dado == "cancelar":
-            estados.pop(chat_id, None)
-            await query.edit_message_text("❌ Registro cancelado.")
-            return
         if not estado:
             await query.edit_message_text("⚠️ Sessão expirada. Envie o valor novamente.")
             return
@@ -363,17 +379,27 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
+    if not TOKEN:
+        raise ValueError("❌ TOKEN não configurado!")
+    if not DATABASE:
+        raise ValueError("❌ DATABASE_URL não configurada!")
+
     init_pool()
     init_db()
     keep_alive()
 
     app = Application.builder().token(TOKEN).build()
 
-    # Job de limpeza de estados — a cada 5 minutos
-    app.job_queue.run_repeating(_job_limpar_estados, interval=300, first=60)
+    # Jobs
+    app.job_queue.run_repeating(_job_limpar_estados,         interval=300,   first=60)
+    app.job_queue.run_repeating(_job_limpar_dados_expirados, interval=86400, first=3600)
 
     cmds = [
+        # Sempre permitidos (sem verificar licença)
         ("start",         cmd_start),
+        ("key",           cmd_key),
+        ("termos",        cmd_termos),
+        # Usuário
         ("ajuda",         cmd_ajuda),
         ("cancelar",      cmd_cancelar),
         ("home",          cmd_home),
@@ -394,9 +420,15 @@ def main():
         ("inv_add",       cmd_inv_add),
         ("inv_del",       cmd_inv_del),
         ("conta",         cmd_conta),
-        ("gerar_key",     cmd_gerar_key),
+        # Admin
+        ("gerarkey",      cmd_gerarkey),
+        ("gerar_key",     cmd_gerar_key),   # alias legado
         ("revogar",       cmd_revogar),
+        ("veruser",       cmd_veruser),
+        ("stats",         cmd_stats),
+        ("users",         cmd_users),
         ("mensagem",      cmd_mensagem),
+        ("mensagemuser",  cmd_mensagemuser),
     ]
     for nome, func in cmds:
         app.add_handler(CommandHandler(nome, func))
@@ -404,10 +436,30 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_texto))
 
+    async def error_handler(update, context):
+        logger.error("❌ Exceção no handler: %s", context.error, exc_info=context.error)
+        if update and update.effective_message:
+            try:
+                await update.effective_message.reply_text("⚠️ Erro interno. Tente novamente.")
+            except Exception:
+                pass
+
+    app.add_error_handler(error_handler)
+
     logger.info("💰 FinBot v2 iniciado!")
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+    async def _run():
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True
+        )
+        await app.updater.idle()
+        await app.stop()
+        await app.shutdown()
+
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

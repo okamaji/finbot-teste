@@ -1,14 +1,15 @@
 """
 handlers/core.py — Comandos principais: start, home, saldo, hoje, mes, extrato.
 
-Correções vs versão anterior:
-- cmd_saldo: usa db_saldo_agregado() — não busca todos os rows
-- cmd_hoje: query SQL filtrada por data — não varre tudo em Python
-- _listar_tipo: idem, usa query com WHERE tipo=
-- cmd_start: usa verificar_licenca_cache (com cache) em vez de db_verificar_licenca raw
-- cmd_extrato: usa db_recentes_com_total() — 1 conexão, não 2
+Novidades:
+- /start com fluxo de termos obrigatório
+- /key — registrar/trocar licença a qualquer momento
+- /termos — ver termos de uso
+- Licença expirada → mensagem clara com /key
+- Mensagem "invalidada" na key (3 tentativas)
 """
 import re
+import os
 import logging
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -17,14 +18,23 @@ from telegram.constants import ParseMode
 from config import MESES, EMOJI, LABEL, EMOJI_METODO, FUSO
 from helpers import fmt, agora_br, calcular_saldo, fmt_registro, fmt_conta, enviar_em_partes
 from database import (db_recentes, db_registros_mes, db_home_data,
-                      db_saldo_agregado, db_recentes_com_total, get_conn, release_conn)
-from middleware import verificar_acesso, get_chat_id_efetivo, verificar_licenca_cache
-from keyboards import teclado_extrato_paginado
+                      db_saldo_agregado, db_recentes_com_total,
+                      db_verificar_termos, db_aceitar_termos, get_conn, release_conn)
+from middleware import verificar_acesso, get_chat_id_efetivo, verificar_licenca_cache, estado_novo
+from keyboards import teclado_extrato_paginado, teclado_termos
 
 logger = logging.getLogger(__name__)
 
 SEP  = "─" * 19
 SEP2 = "━" * 19
+
+# Carrega termos do arquivo
+_TERMOS_PATH = os.path.join(os.path.dirname(__file__), "../termos.txt")
+try:
+    with open(_TERMOS_PATH, encoding="utf-8") as f:
+        TERMOS_TEXTO = f.read()
+except FileNotFoundError:
+    TERMOS_TEXTO = "Termos de uso indisponíveis."
 
 
 def menu_principal() -> str:
@@ -59,6 +69,9 @@ def menu_principal() -> str:
         "/investimentos — Carteira de investimentos\n"
         "/inv\\_add — Adicionar investimento\n"
         "/inv\\_del — Remover investimento\n\n"
+        "🔑 *Conta*\n\n"
+        "/key — Registrar/trocar licença\n"
+        "/termos — Ver termos de uso\n\n"
         f"{SEP}\n"
         "_/ajuda para ver esta mensagem novamente_"
     )
@@ -70,22 +83,59 @@ async def cmd_start(update: Update, context):
     estados = context.bot_data.setdefault("estados", {})
     estados.pop(chat_id, None)
 
-    # Usa cache — nunca bate no banco se já verificou recentemente
     status = verificar_licenca_cache(chat_id)
-    if status == "ok":
-        await update.message.reply_text(menu_principal(), parse_mode=ParseMode.MARKDOWN)
-    elif status == "expirada":
-        await update.message.reply_text(
-            "⚠️ *Seu plano expirou!*\n\nRenove agora com @okamaji para continuar usando o bot.",
-            parse_mode=ParseMode.MARKDOWN
-        )
-    else:
-        estados[chat_id] = {"etapa": "aguardando_key", "_ts": __import__("time").time()}
+
+    if status == "invalida":
+        estados[chat_id] = estado_novo({"etapa": "aguardando_key"})
         nome = update.effective_user.first_name or "usuário"
         await update.message.reply_text(
-            f"👋 Bem-vindo, *{nome}*!\n\nPara começar, insira sua *chave de acesso*:",
+            f"👋 Bem-vindo, *{nome}*!\n\n"
+            "Para começar, insira sua *chave de acesso*:\n\n"
+            "_Não tem uma chave? Contate @okamaji_",
             parse_mode=ParseMode.MARKDOWN
         )
+        return
+
+    if status == "expirada":
+        await update.message.reply_text(
+            "⚠️ *Sua licença expirou!*\n\n"
+            "Use /key para registrar uma nova chave.\nSuporte: @okamaji",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    # Licença ok → verifica termos
+    if not db_verificar_termos(chat_id):
+        await _mostrar_termos(update)
+        return
+
+    await update.message.reply_text(menu_principal(), parse_mode=ParseMode.MARKDOWN)
+
+
+async def _mostrar_termos(update: Update):
+    await update.message.reply_text("📋 *Termos de Uso*", parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text(
+        f"{TERMOS_TEXTO}\n\nVocê precisa aceitar os termos para continuar.",
+        reply_markup=teclado_termos()
+    )
+
+
+# ── /key ──────────────────────────────────────────────────────────────────────
+async def cmd_key(update: Update, context):
+    """Permite ao usuário registrar ou trocar sua licença a qualquer momento."""
+    chat_id = update.effective_chat.id
+    estados = context.bot_data.setdefault("estados", {})
+    estados[chat_id] = estado_novo({"etapa": "aguardando_key"})
+    await update.message.reply_text(
+        "🔑 *Registrar licença*\n\nInsira sua chave de acesso:",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+
+# ── /termos ───────────────────────────────────────────────────────────────────
+async def cmd_termos(update: Update, context):
+    await update.message.reply_text("📋 *Termos de Uso*", parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text(TERMOS_TEXTO)
 
 
 # ── /ajuda ────────────────────────────────────────────────────────────────────
@@ -194,13 +244,10 @@ async def cmd_saldo(update: Update, context):
     if not await verificar_acesso(update):
         return
     chat_id = get_chat_id_efetivo(update.effective_chat.id, conta_ativa)
-
-    # db_saldo_agregado usa SUM no SQL — não busca todos os rows
     s = db_saldo_agregado(chat_id)
     if s["entradas"] == 0 and s["despesas"] == 0 and s["pixs"] == 0:
         await update.message.reply_text("📭 Nenhum registro ainda.")
         return
-
     saldo_emoji = "📈" if s["saldo"] >= 0 else "📉"
     await update.message.reply_text(
         f"💰 *Saldo Geral*\n{SEP}\n\n"
@@ -220,7 +267,6 @@ async def cmd_hoje(update: Update, context):
     chat_id  = get_chat_id_efetivo(update.effective_chat.id, conta_ativa)
     hoje_str = agora_br().strftime("%d/%m/%Y")
 
-    # Query filtrada por data — não carrega histórico inteiro
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -305,7 +351,6 @@ async def cmd_extrato(update: Update, context):
     chat_id = get_chat_id_efetivo(update.effective_chat.id, conta_ativa)
     PAGE    = 20
 
-    # 1 conexão, não 2
     recentes, total = db_recentes_com_total(chat_id, PAGE, 0)
     if not recentes:
         await update.message.reply_text("📭 Nenhum registro no extrato ainda.")
@@ -329,7 +374,6 @@ async def cmd_extrato(update: Update, context):
 
 # ── helpers internos ──────────────────────────────────────────────────────────
 async def _listar_tipo(update: Update, chat_id: int, tipo: str, emoji: str, label: str):
-    """Lista registros de um tipo usando query filtrada — não varre histórico inteiro."""
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -364,12 +408,14 @@ async def cmd_entradas(update: Update, context):
     await _listar_tipo(update, get_chat_id_efetivo(update.effective_chat.id, conta_ativa),
                        "deposito", "🟢", "Entrada")
 
+
 async def cmd_despesas(update: Update, context):
     conta_ativa = context.bot_data.setdefault("conta_ativa", {})
     if not await verificar_acesso(update):
         return
     await _listar_tipo(update, get_chat_id_efetivo(update.effective_chat.id, conta_ativa),
                        "despesa", "🔴", "Despesa")
+
 
 async def cmd_pixs(update: Update, context):
     conta_ativa = context.bot_data.setdefault("conta_ativa", {})

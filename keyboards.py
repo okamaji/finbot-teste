@@ -1,12 +1,12 @@
 """
 keyboards.py — Teclados inline do Telegram.
-
-Correção: callback_data de método usa código curto (max 64 bytes no Telegram).
-  "metodo_fatura:42:Cartão de Crédito" → "mf:42:credito"
+Todos os fluxos incluem botão ❌ Cancelar via callback "cancelar_fluxo".
 """
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from config import EMOJI, METODOS_PAGAMENTO, EMOJI_METODO, METODO_SHORT
 from helpers import fmt
+
+BTN_CANCELAR = InlineKeyboardButton("❌ Cancelar", callback_data="cancelar_fluxo")
 
 
 def teclado_tipo() -> InlineKeyboardMarkup:
@@ -16,30 +16,41 @@ def teclado_tipo() -> InlineKeyboardMarkup:
             InlineKeyboardButton("🟢 Depósito", callback_data="tipo:deposito"),
             InlineKeyboardButton("🔵 Pix",      callback_data="tipo:pix"),
         ],
-        [InlineKeyboardButton("❌ Cancelar", callback_data="tipo:cancelar")],
+        [BTN_CANCELAR],
     ])
 
 
+def teclado_termos() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Concordo",    callback_data="termos_aceitar"),
+        InlineKeyboardButton("❌ Não aceito",  callback_data="termos_recusar"),
+    ]])
+
+
+def teclado_nlp() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Confirmar", callback_data="nlp_confirmar"),
+        InlineKeyboardButton("✏️ Corrigir",  callback_data="nlp_corrigir"),
+        BTN_CANCELAR,
+    ]])
+
+
 def teclado_metodo_pagamento(conta_id: int) -> InlineKeyboardMarkup:
-    """
-    Teclado para escolher método de pagamento de uma fatura.
-    Usa código curto no callback para respeitar o limite de 64 bytes.
-    """
     botoes = [
         [InlineKeyboardButton(
             f"{EMOJI_METODO[m]} {m}",
-            callback_data=f"mf:{conta_id}:{METODO_SHORT[m]}"   # ex: mf:42:credito
+            callback_data=f"mf:{conta_id}:{METODO_SHORT[m]}"
         )]
         for m in METODOS_PAGAMENTO
     ]
-    botoes.append([InlineKeyboardButton("❌ Cancelar", callback_data="cancelar_metodo")])
+    botoes.append([BTN_CANCELAR])
     return InlineKeyboardMarkup(botoes)
 
 
 def teclado_confirmar_pago(conta_id: int, metodo_short: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Confirmar", callback_data=f"cp:{conta_id}:{metodo_short}"),
-        InlineKeyboardButton("❌ Cancelar",  callback_data="cancelar_metodo"),
+        BTN_CANCELAR,
     ]])
 
 
@@ -54,6 +65,7 @@ def teclado_contas_pendentes(contas: list) -> InlineKeyboardMarkup | None:
         )]
         for r in sorted(pendentes, key=lambda x: x["vencimento"])
     ]
+    botoes.append([BTN_CANCELAR])
     return InlineKeyboardMarkup(botoes)
 
 
@@ -67,7 +79,7 @@ def teclado_editar_recentes(recentes: list) -> InlineKeyboardMarkup | None:
         )]
         for r in recentes
     ]
-    botoes.append([InlineKeyboardButton("❌ Cancelar", callback_data="editar_sel:cancelar")])
+    botoes.append([BTN_CANCELAR])
     return InlineKeyboardMarkup(botoes)
 
 
@@ -78,7 +90,7 @@ def teclado_campos_editar(reg_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📍 Destino",   callback_data=f"editar_campo:{reg_id}:destino"),
          InlineKeyboardButton("🔄 Tipo",      callback_data=f"editar_campo:{reg_id}:tipo")],
         [InlineKeyboardButton("🗑️ Excluir",   callback_data=f"editar_campo:{reg_id}:excluir")],
-        [InlineKeyboardButton("❌ Cancelar",  callback_data="editar_sel:cancelar")],
+        [BTN_CANCELAR],
     ])
 
 
@@ -89,7 +101,7 @@ def teclado_tipos_editar(reg_id: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton("🟢 Depósito", callback_data=f"editar_tipo:{reg_id}:deposito"),
             InlineKeyboardButton("🔵 Pix",      callback_data=f"editar_tipo:{reg_id}:pix"),
         ],
-        [InlineKeyboardButton("❌ Cancelar", callback_data="editar_sel:cancelar")],
+        [BTN_CANCELAR],
     ])
 
 
@@ -103,7 +115,7 @@ def teclado_retirar_recentes(recentes: list) -> InlineKeyboardMarkup | None:
         )]
         for r in recentes
     ]
-    botoes.append([InlineKeyboardButton("❌ Cancelar", callback_data="retirar:cancelar")])
+    botoes.append([BTN_CANCELAR])
     return InlineKeyboardMarkup(botoes)
 
 
@@ -112,11 +124,4 @@ def teclado_extrato_paginado(offset: int, total: int, page_size: int = 20) -> In
         return None
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("⬇️ Ver mais", callback_data=f"extrato_mais:{offset+page_size}")
-    ]])
-
-
-def teclado_inv_remover(inv_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("🗑️ Remover", callback_data=f"inv_remover:{inv_id}"),
-        InlineKeyboardButton("❌ Cancelar", callback_data="inv_cancelar"),
     ]])

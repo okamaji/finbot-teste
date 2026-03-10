@@ -1,0 +1,34 @@
+📋 TERMOS DE USO — FinBot
+
+Ao usar este bot, você concorda com os seguintes termos:
+
+1. USO PESSOAL
+   O bot é de uso exclusivamente pessoal. É proibido compartilhar sua chave de acesso com terceiros.
+
+2. LICENÇA
+   • Cada chave de acesso é válida para 1 único usuário (chat_id).
+   • Tentativas de uso da mesma key por múltiplos usuários resultarão em invalidação automática.
+   • A licença tem prazo de validade definido no momento da ativação.
+
+3. DADOS E PRIVACIDADE
+   • Seus dados financeiros ficam armazenados em banco de dados seguro.
+   • Os dados são de uso exclusivo do próprio usuário.
+   • Não compartilhamos dados com terceiros.
+
+4. RETENÇÃO DE DADOS
+   • Após o vencimento da licença, você tem 30 dias para renovar.
+   • Após 40 dias sem renovação, TODOS os seus dados serão excluídos permanentemente.
+   • Essa exclusão inclui: histórico financeiro, registros, contas e configurações.
+
+5. ANTI-SPAM
+   • O bot possui proteção automática contra spam.
+   • Uso abusivo pode resultar em revogação imediata da licença.
+
+6. DISPONIBILIDADE
+   • O serviço é fornecido sem garantia de disponibilidade contínua.
+   • Manutenções podem ocorrer sem aviso prévio.
+
+7. SUPORTE
+   • Dúvidas e suporte: @okamaji
+
+Ao clicar em "✅ Concordo", você declara ter lido e aceito todos os termos acima.
