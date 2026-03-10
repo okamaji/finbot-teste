@@ -12,6 +12,8 @@ Novidades:
 - Job diário de retenção de dados (40 dias após expiração)
 - asyncio.run() compatível com Python 3.12+
 - cancelar_fluxo — callback universal de cancelamento
+- /manutencao — ativa modo manutenção (bloqueia todos os usuários)
+- /normal — desativa modo manutenção e restaura o bot
 """
 import asyncio
 import logging
@@ -23,7 +25,7 @@ from telegram.ext import (Application, CommandHandler, MessageHandler,
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
 
-from config import TOKEN, DATABASE, FUSO, EMOJI, LABEL
+from config import TOKEN, DATABASE, FUSO, EMOJI, LABEL, ADMIN_ID
 from database import (init_pool, init_db, db_ativar_licenca, db_inserir_registro,
                       db_saldo_agregado, db_atualizar_registro,
                       db_aceitar_termos, db_verificar_termos,
@@ -53,6 +55,9 @@ from handlers.investimentos import (cmd_investimentos, cmd_inv_add, cmd_inv_del,
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# ── Modo manutenção ───────────────────────────────────────────────────────────
+MANUTENCAO: bool = False
 
 _user_locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 _demo_locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
@@ -111,6 +116,11 @@ async def cmd_conta(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── Handler de texto principal ────────────────────────────────────────────────
 async def handle_texto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
+
+    # Modo manutenção — bloqueia todos exceto admin
+    if MANUTENCAO and chat_id != ADMIN_ID:
+        await update.message.reply_text("🔧 *FinBot em manutenção!*\nVoltamos em breve.", parse_mode=ParseMode.MARKDOWN)
+        return
 
     # Rate limiting
     if await checar_spam(update):
@@ -280,6 +290,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     chat_id     = query.message.chat_id
     data        = query.data
+
+    # Modo manutenção — bloqueia todos exceto admin
+    if MANUTENCAO and chat_id != ADMIN_ID:
+        await query.answer("🔧 FinBot em manutenção! Voltamos em breve.", show_alert=True)
+        return
+
     estados     = context.bot_data.setdefault("estados", {})
     conta_ativa = context.bot_data.setdefault("conta_ativa", {})
     chat_id_ef  = get_chat_id_efetivo(chat_id, conta_ativa)
@@ -377,6 +393,36 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 
+# ── /manutencao e /normal ─────────────────────────────────────────────────────
+async def cmd_manutencao(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ativa o modo manutenção — bloqueia todos os usuários."""
+    global MANUTENCAO
+    if update.effective_chat.id != ADMIN_ID:
+        return
+    MANUTENCAO = True
+    await update.message.reply_text(
+        "🔧 *Modo manutenção ATIVADO!*\n\n"
+        "Todos os usuários receberão a mensagem de manutenção.\n"
+        "Use /normal para restaurar o bot.",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    logger.info("Modo manutenção ATIVADO pelo admin.")
+
+
+async def cmd_normal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Desativa o modo manutenção — restaura o bot."""
+    global MANUTENCAO
+    if update.effective_chat.id != ADMIN_ID:
+        return
+    MANUTENCAO = False
+    await update.message.reply_text(
+        "✅ *Modo manutenção DESATIVADO!*\n\n"
+        "O bot está funcionando normalmente.",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    logger.info("Modo manutenção DESATIVADO pelo admin.")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     if not TOKEN:
@@ -430,6 +476,8 @@ def main():
         ("mensagem",      cmd_mensagem),
         ("mensagemuser",  cmd_mensagemuser),
         ("admin",         cmd_admin),
+        ("manutencao",    cmd_manutencao),
+        ("normal",        cmd_normal),
     ]
     for nome, func in cmds:
         app.add_handler(CommandHandler(nome, func))
