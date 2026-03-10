@@ -58,6 +58,10 @@ async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/mensagem `<texto>` — Broadcast para todos os usuários\n"
         "/mensagemuser `<chat_id>` `<texto>` — Mensagem para usuário específico\n\n"
         f"{SEP}\n"
+        "🔧 *Manutenção*\n"
+        "/manutencao — Ativa modo manutenção \\(bloqueia todos os usuários\\)\n"
+        "/normal — Desativa manutenção e restaura o bot\n\n"
+        f"{SEP}\n"
         "_Todos os comandos acima são exclusivos para administradores._",
         parse_mode=ParseMode.MARKDOWN
     )
