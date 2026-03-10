@@ -455,11 +455,13 @@ def main():
             allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=True
         )
-        await app.updater.idle()
-        await app.stop()
-        await app.shutdown()
+        # Aguarda indefinidamente até receber sinal de encerramento (SIGINT/SIGTERM)
+        await asyncio.Event().wait()
 
-    asyncio.run(_run())
+    try:
+        asyncio.run(_run())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("🛑 FinBot encerrado.")
 
 
 if __name__ == "__main__":
