@@ -46,7 +46,7 @@ from handlers.registros import (cmd_desfazer, cmd_editar, cmd_retirar,
 from handlers.contas import (cmd_apagar, cmd_pendentes, cmd_pago,
                                handle_contas_callback, handle_contas_texto)
 from handlers.admin import (cmd_gerar_key, cmd_gerarkey, cmd_revogar,
-                              cmd_veruser, cmd_stats, cmd_users)
+                              cmd_veruser, cmd_stats, cmd_users, cmd_admin)
 from handlers.broadcast import cmd_mensagem, cmd_mensagemuser
 from handlers.investimentos import (cmd_investimentos, cmd_inv_add, cmd_inv_del,
                                      handle_inv_callback, handle_inv_texto)
@@ -429,6 +429,7 @@ def main():
         ("users",         cmd_users),
         ("mensagem",      cmd_mensagem),
         ("mensagemuser",  cmd_mensagemuser),
+        ("admin",         cmd_admin),
     ]
     for nome, func in cmds:
         app.add_handler(CommandHandler(nome, func))
